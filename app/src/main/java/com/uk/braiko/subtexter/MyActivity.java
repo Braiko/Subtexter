@@ -1,9 +1,13 @@
 package com.uk.braiko.subtexter;
 
 import android.app.Activity;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
+
+import java.io.IOException;
+import java.net.URL;
 
 
 public class MyActivity extends Activity {
@@ -12,6 +16,16 @@ public class MyActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_my);
+        FixedVideoView videoView = (FixedVideoView) findViewById(R.id.view);
+        videoView.setVideoURI(Uri.parse("http://freedroid.net/video/test.mp4"));
+        videoView.start();
+        try {
+            videoView.setSubtitleSource(new URL("http://freedroid.net/tdo/Sabotage.2014.1080p-720p.BluRay.x264.YIFY.Eng.srt"));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        videoView.setSubTitleView((android.widget.TextView) findViewById(R.id.subtitle));
+        videoView.seekTo(49999);
     }
 
 

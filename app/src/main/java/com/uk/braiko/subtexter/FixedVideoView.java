@@ -10,9 +10,9 @@ import android.media.MediaPlayer.OnCompletionListener;
 import android.media.MediaPlayer.OnErrorListener;
 import android.media.MediaPlayer.OnInfoListener;
 import android.media.MediaPlayer.OnSeekCompleteListener;
-import android.media.TimedText;
 import android.net.Uri;
 import android.util.AttributeSet;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
@@ -33,6 +33,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.Map;
 
 //import android.util.Log;
@@ -43,6 +44,7 @@ import java.util.Map;
  */
 @SuppressLint("NewApi")
 public class FixedVideoView extends SurfaceView implements MediaPlayerControl {
+    private ArrayList<Phrase> subtitles = new ArrayList<Phrase>();
     private String TAG = "VideoView";
     // settable by the client
     private Uri mUri;
@@ -89,6 +91,7 @@ public class FixedVideoView extends SurfaceView implements MediaPlayerControl {
     private int retryCount;
     private TextView subtitleView;
     private boolean isNeedSubtitle = true;
+    private SubtitleLoop subtitleThread;
 
     public FixedVideoView(Context context) {
         super(context);
@@ -150,14 +153,14 @@ public class FixedVideoView extends SurfaceView implements MediaPlayerControl {
         switch (specMode) {
             case MeasureSpec.UNSPECIFIED:
                     /*
-					 * Parent says we can be as big as we want. Just don't be larger than max size imposed on ourselves.
+                     * Parent says we can be as big as we want. Just don't be larger than max size imposed on ourselves.
 					 */
                 result = desiredSize;
                 break;
 
             case MeasureSpec.AT_MOST:
-					/*
-					 * Parent says we can be as big as we want, up to specSize. Don't be larger than specSize, and don't be larger than the max size imposed on ourselves.
+                    /*
+                     * Parent says we can be as big as we want, up to specSize. Don't be larger than specSize, and don't be larger than the max size imposed on ourselves.
 					 */
                 result = Math.min(desiredSize, specSize);
                 break;
@@ -252,6 +255,8 @@ public class FixedVideoView extends SurfaceView implements MediaPlayerControl {
         release(false);
         try {
             mMediaPlayer = new MediaPlayer();
+
+            InstallSubtitleIn(mMediaPlayer);
 
             mMediaPlayer.setOnBufferingUpdateListener(mBufferUpdateListener);
 
@@ -429,7 +434,7 @@ public class FixedVideoView extends SurfaceView implements MediaPlayerControl {
             }
 
 																						/*
-																						 * Otherwise, pop up an error dialog so the user knows that something bad has happened. Only try and pop up the dialog if we're attached to a window. When we're going
+                                                                                         * Otherwise, pop up an error dialog so the user knows that something bad has happened. Only try and pop up the dialog if we're attached to a window. When we're going
 																						 * away and no longer have a window, don't bother showing the user an error.
 																						 */
             // if (getWindowToken() != null)
@@ -730,20 +735,194 @@ public class FixedVideoView extends SurfaceView implements MediaPlayerControl {
         return isNeedSubtitle;
     }
 
-    public void setSubtitleSource(File file) throws IOException{
+    public void setSubtitleSource(File file) throws IOException {
         FileInputStream in = new FileInputStream(file);
 
     }
 
-    public void setSubtitleSource(URL url)throws IOException  {
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setDoInput(true);
-        InputStream in = new BufferedInputStream(connection.getInputStream());
+    public void setSubtitleSource(final URL url) throws IOException {
+        //todo add some listenere for detecting when we catch  some exception
+        (new Thread() {
+            @Override
+            public void run() {
+                try {
+                    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                    connection.setDoInput(true);
+                    InputStream in = new BufferedInputStream(connection.getInputStream());
+                    readSubtitle(in);
+                } catch (Exception ex) {
+
+                }
+            }
+        }).start();
     }
 
-    private InputStream getInputConnectionForEpisode(InputStream in) throws IOException {
-        BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(in));
-
+    public InputStream readSubtitle(InputStream in) throws IOException {
+        this.subtitles.clear();
+        final BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(in));
+        (new Thread() {
+            @Override
+            public void run() {
+                try {
+                    ReadSubtitle(bufferedReader);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    //todo
+                }
+            }
+        }).start();
         return in;
+    }
+
+    private void ReadSubtitle(BufferedReader bufferedReader) throws Exception {
+        boolean isReadSomethin = false;
+        String num = "";
+        String time = "";
+        ArrayList<String> text = new ArrayList<String>();
+        String bufStr = "";
+        while (true) {
+            bufStr = bufferedReader.readLine();
+            if (bufStr == null)
+                break;
+            if (bufStr.equals("")) {
+                if (isReadSomethin) {
+                    final Phrase phrase = new Phrase(num, time, text);
+                    Sync(new SynhronizerWorker() {
+                        @Override
+                        public void work() {
+                            FixedVideoView.this.subtitles.add(phrase);
+                        }
+                    });
+                    isReadSomethin = false;
+                    num = "";
+                    time = "";
+                    text.clear();
+                    continue;
+                }
+            } else isReadSomethin = true;
+            if (num.equals("")) num = bufStr;
+            else if (time.equals("")) time = bufStr;
+            else text.add(bufStr);
+        }
+    }
+
+    private synchronized void Sync(SynhronizerWorker task) {
+        task.work();
+    }
+
+
+    //**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**
+    // Subtitle loop
+    //**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**
+
+
+    private class SubtitleLoop extends Thread {
+        private volatile MediaPlayer mediaPlayer;
+
+        @Override
+        public void run() {
+            super.run();
+            while (true) {
+                Log.d("debug_and_test", "start seek subtitle");
+                UpdateSubtitle(mediaPlayer);
+                Log.d("debug_and_test", "stop seek subtitle");
+                try {
+                    sleep(100);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        public void setMediaPlayer(MediaPlayer mediaPlayer) {
+            this.mediaPlayer = mediaPlayer;
+        }
+    }
+
+    private void InstallSubtitleIn(MediaPlayer mediaPlayer) {
+        if (subtitleThread == null) {
+            this.subtitleThread = new SubtitleLoop();
+            subtitleThread.start();
+        }
+        subtitleThread.setMediaPlayer(mediaPlayer);
+    }
+
+    private void UpdateSubtitle(MediaPlayer mediaPlayer) {
+        if (!isNeedSubtitle) return;
+        if (mediaPlayer == null) return;
+        if (subtitleView == null) return;
+        if (!mediaPlayer.isPlaying()) return;
+        final int position = mediaPlayer.getCurrentPosition();
+        Sync(new SynhronizerWorker() {
+            @Override
+            public void work() {
+                for (final Phrase phrase : subtitles) {
+                    if (phrase.isCanShow(position)) {
+                        final Phrase phraseForShow = phrase;
+                        subtitleView.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                subtitleView.setText(phraseForShow.getContent());
+                            }
+                        })
+                        ;
+                        return;
+                    }
+                }
+                subtitleView.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        subtitleView.setText("");
+                    }
+                });
+            }
+        });
+    }
+
+    //**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**
+    // additional type
+    //**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**
+
+    private interface SynhronizerWorker {
+        public void work();
+    }
+
+    private class Phrase {
+        private String content;
+        private final long begin;
+        private final long end;
+
+        public Phrase(String num, String time, ArrayList<String> content) throws Exception {
+            if (!num.endsWith("")) {
+                //todo read num??
+            }
+            String[] timePut = time.split("-->");
+            if (timePut.length != 2) throw new Exception("can`t parse time");
+            this.begin = parseTime(timePut[0]);
+            this.end = parseTime(timePut[1]);
+            this.content = "";
+            for (String str : content)
+                this.content += str + "\n";
+        }
+
+        private long parseTime(String time) {
+            time = time.replaceAll(" ", "");
+            String[] timePut = time.split(":");
+            long result = 0;
+            result += Integer.parseInt(timePut[0]) * 1000 * 60 * 60;
+            result += Integer.parseInt(timePut[1]) * 1000 * 60;
+            String[] sec_milisec = timePut[2].split(",");
+            result += Integer.parseInt(sec_milisec[0]) * 1000;
+            result += Integer.parseInt(sec_milisec[1]);
+            return result;
+        }
+
+        public boolean isCanShow(long nowtime) {
+            return ((begin <= nowtime) && (end > nowtime));
+        }
+
+        public String getContent() {
+            return content;
+        }
     }
 }
